@@ -1,0 +1,29 @@
+# Ignore files with secrets or credentials
+inventory-orig
+*.key
+*.pem
+*.crt
+*.env
+*.secret*
+*.token*
+*.password*
+*.credentials*
+*.vault*
+*.private*
+*.id_rsa*
+*.id_dsa*
+*.id_ecdsa*
+*.id_ed25519*
+*values.yaml
+*secrets.yaml
+*secrets.yml
+*credentials.yaml
+*credentials.yml
+# Ansible config and token files
+rke2-agent-config.yaml.j2
+rke2-server-config.yaml.j2
+templates/rke2-agent-config.yaml.j2
+templates/rke2-server-config.yaml.j2
+# Exclude any kubeconfig or sensitive config
+kubeconfig*
+config*

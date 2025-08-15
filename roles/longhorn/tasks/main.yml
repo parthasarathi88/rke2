@@ -1,0 +1,44 @@
+---
+# Install Longhorn storage provisioner via Helm
+- name: Create longhorn namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: longhorn-system
+    state: present
+
+- name: Add Longhorn Helm repo
+  shell: helm repo add longhorn https://charts.longhorn.io
+  args:
+    creates: /tmp/longhorn-helm-repo-added
+  register: helm_repo_result
+  changed_when: helm_repo_result.rc == 0
+  ignore_errors: yes
+
+- name: Update Helm repos
+  shell: helm repo update
+  ignore_errors: yes
+
+- name: Install Longhorn via Helm
+  shell: >
+    helm upgrade --install longhorn longhorn/longhorn \
+      --namespace longhorn-system \
+      --version {{ longhorn_chart_version }} \
+      --set persistence.defaultClass=true \
+      --set persistence.defaultFsType=ext4 \
+      --wait --timeout=600s
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  register: longhorn_install_result
+  changed_when: longhorn_install_result.rc == 0
+  ignore_errors: yes
+
+- name: Wait for Longhorn pods to be ready
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: longhorn-system
+  register: longhorn_pods
+
+- name: Display Longhorn pod status
+  ansible.builtin.debug:
+    var: longhorn_pods.resources

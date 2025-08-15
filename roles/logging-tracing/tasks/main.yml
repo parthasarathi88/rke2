@@ -1,0 +1,328 @@
+---
+# Logging and Tracing Role - Main Tasks
+# =====================================
+# Deploys ELK Stack (Elasticsearch, Logstash, Kibana) + Jaeger for distributed tracing
+# Optimized for POC environment with resource constraints
+#
+# IMPORTANT: Uses Elasticsearch/Kibana 7.17.3 for simplicity
+# - No X-Pack security complications
+# - HTTP-only communication between components
+# - Single-node Elasticsearch cluster
+# - Proven working configuration
+#
+# Last updated: 2025-08-14 - Resolved "Kibana server is not ready yet" issue
+
+- name: Create logging-tracing namespace
+  shell: |
+    /var/lib/rancher/rke2/bin/kubectl create namespace {{ logging_namespace }} --dry-run=client -o yaml | /var/lib/rancher/rke2/bin/kubectl apply -f -
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - setup
+    - namespace
+    - logging
+    - tracing
+
+- name: Add Elastic Helm repository
+  shell: |
+    export PATH=/usr/local/bin:$PATH
+    /usr/local/bin/helm repo add elastic https://helm.elastic.co
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - setup
+    - helm
+    - repos
+    - logging
+
+- name: Add Jaeger Helm repository
+  shell: |
+    export PATH=/usr/local/bin:$PATH
+    /usr/local/bin/helm repo add jaegertracing https://jaegertracing.github.io/helm-charts
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - setup
+    - helm
+    - repos
+    - tracing
+
+- name: Update Helm repositories
+  shell: |
+    export PATH=/usr/local/bin:$PATH
+    /usr/local/bin/helm repo update
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - setup
+    - helm
+    - repos
+    - logging
+    - tracing
+
+# Deploy Elasticsearch (7.17.3 - Simple HTTP without security)
+- name: Deploy Elasticsearch (7.17.3)
+  shell: |
+    export PATH=/usr/local/bin:$PATH
+    /usr/local/bin/helm upgrade --install elasticsearch elastic/elasticsearch \
+      --version "{{ elasticsearch_chart_version }}" \
+      --namespace "{{ logging_namespace }}" \
+      --create-namespace \
+      --set clusterName="{{ elasticsearch_cluster_name }}" \
+      --set nodeGroup="{{ elasticsearch_node_group }}" \
+      --set replicas="{{ elasticsearch_replicas }}" \
+      --set minimumMasterNodes="{{ elasticsearch_min_master_nodes }}" \
+      --set esJavaOpts="{{ elasticsearch_java_opts }}" \
+      --set xpack.security.enabled=false \
+      --set discovery.type=single-node \
+      --set service.type=ClusterIP \
+      --set volumeClaimTemplate.storageClassName="{{ storage_class }}" \
+      --set volumeClaimTemplate.accessModes[0]=ReadWriteOnce \
+      --set volumeClaimTemplate.resources.requests.storage="{{ elasticsearch_storage_size }}" \
+      --set resources.requests.memory="{{ elasticsearch_memory_request }}" \
+      --set resources.requests.cpu="{{ elasticsearch_cpu_request }}" \
+      --set resources.limits.memory="{{ elasticsearch_memory_limit }}" \
+      --set resources.limits.cpu="{{ elasticsearch_cpu_limit }}" \
+      --wait --timeout=600s
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - deploy
+    - elasticsearch
+    - logging
+
+# Deploy Kibana (7.17.3 - Matching Elasticsearch version)
+- name: Deploy Kibana (7.17.3)
+  shell: |
+    export PATH=/usr/local/bin:$PATH
+    /usr/local/bin/helm upgrade --install kibana elastic/kibana \
+      --version "{{ kibana_chart_version }}" \
+      --namespace "{{ logging_namespace }}" \
+      --set elasticsearchHosts="http://elasticsearch-master:9200" \
+      --set service.type=ClusterIP \
+      --set service.port=5601 \
+      --set resources.requests.memory="{{ kibana_memory_request }}" \
+      --set resources.requests.cpu="{{ kibana_cpu_request }}" \
+      --set resources.limits.memory="{{ kibana_memory_limit }}" \
+      --set resources.limits.cpu="{{ kibana_cpu_limit }}" \
+      --wait --timeout=600s
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - deploy
+    - kibana
+    - logging
+
+# Deploy Logstash
+- name: Deploy Logstash
+  shell: |
+    export PATH=/usr/local/bin:$PATH
+    /usr/local/bin/helm upgrade --install logstash elastic/logstash \
+      --version "{{ logstash_chart_version }}" \
+      --namespace "{{ logging_namespace }}" \
+      --set replicas="{{ logstash_replicas }}" \
+      --set resources.requests.cpu="{{ logstash_cpu_request }}" \
+      --set resources.requests.memory="{{ logstash_memory_request }}" \
+      --set resources.limits.cpu="{{ logstash_cpu_limit }}" \
+      --set resources.limits.memory="{{ logstash_memory_limit }}" \
+      --set service.type=ClusterIP \
+      --set service.ports[0].name=beats \
+      --set service.ports[0].port=5044 \
+      --set service.ports[0].protocol=TCP \
+      --set service.ports[1].name=http \
+      --set service.ports[1].port=8080 \
+      --set service.ports[1].protocol=TCP \
+      --wait --timeout=600s
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - deploy
+    - logstash
+    - logging
+
+# Deploy Filebeat for log collection
+- name: Deploy Filebeat DaemonSet
+  shell: |
+    export PATH=/usr/local/bin:$PATH
+    /usr/local/bin/helm upgrade --install filebeat elastic/filebeat \
+      --version "{{ filebeat_chart_version }}" \
+      --namespace "{{ logging_namespace }}" \
+      --set daemonset.enabled=true \
+      --set resources.requests.cpu="{{ filebeat_cpu_request }}" \
+      --set resources.requests.memory="{{ filebeat_memory_request }}" \
+      --set resources.limits.cpu="{{ filebeat_cpu_limit }}" \
+      --set resources.limits.memory="{{ filebeat_memory_limit }}" \
+      --wait --timeout=600s
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - deploy
+    - filebeat
+    - logging
+
+# Deploy Jaeger for distributed tracing
+- name: Deploy Jaeger values file (template)
+  template:
+    src: roles/logging-tracing/files/jaeger-values.yaml
+    dest: /tmp/jaeger-values.yaml
+    mode: '0644'
+  tags:
+    - setup
+    - jaeger
+    - tracing
+
+- name: Deploy Jaeger (Helm)
+  shell: |
+    export PATH=/usr/local/bin:$PATH
+    /usr/local/bin/helm upgrade --install jaeger jaegertracing/jaeger \
+      --version "{{ jaeger_chart_version }}" \
+      --namespace "{{ logging_namespace }}" \
+      -f /tmp/jaeger-values.yaml \
+      --wait --timeout=60s
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - deploy
+    - jaeger
+    - tracing
+  ignore_errors: true
+
+# Wait for Kibana to be ready (updated for correct pod selector)
+- name: Wait for Kibana to be ready
+  shell: /var/lib/rancher/rke2/bin/kubectl wait --for=condition=ready pod -l app=kibana -n "{{ logging_namespace }}" --timeout=300s
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - configure
+    - kibana
+    - logging
+
+# Verify Elasticsearch health
+- name: Check Elasticsearch cluster health
+  shell: /var/lib/rancher/rke2/bin/kubectl exec -n "{{ logging_namespace }}" elasticsearch-master-0 -- curl -s http://localhost:9200/_cluster/health
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  register: elasticsearch_health
+  tags:
+    - configure
+    - elasticsearch
+    - logging
+    - status
+
+- name: Display Elasticsearch health status
+  debug:
+    msg: "Elasticsearch cluster health: {{ elasticsearch_health.stdout }}"
+  tags:
+    - configure
+    - elasticsearch
+    - logging
+    - status
+
+- name: Wait for Elasticsearch indices to be created
+  pause:
+    seconds: 60
+  tags:
+    - configure
+    - kibana
+    - logging
+
+# Display access information
+- name: Display logging and tracing access information
+  debug:
+    msg:
+      - "=== ELK Stack Deployment Complete (v7.17.3) ==="
+      - ""
+      - "📊 Kibana (Logs Dashboard):"
+      - "  Internal: http://kibana-kibana.{{ logging_namespace }}.svc.cluster.local:5601"
+      - "  External: http://{{ kibana_external_url }}"
+      - ""
+      - "🔍 Elasticsearch (Search Engine):"
+      - "  Internal: http://elasticsearch-master.{{ logging_namespace }}.svc.cluster.local:9200"
+      - "  External: {{ 'http://' + elasticsearch_external_url if elasticsearch_ingress_enabled else 'Not configured' }}"
+      - ""
+      - "📈 Jaeger (Tracing UI):"
+      - "  Internal: http://jaeger-query.{{ logging_namespace }}.svc.cluster.local:16686"
+      - "  External: {{ 'http://' + jaeger_external_url if jaeger_ingress_enabled else 'Not configured' }}"
+      - ""
+      - "🔧 Configuration:"
+      - "  Namespace: {{ logging_namespace }}"
+      - "  Storage Class: {{ storage_class }}"
+      - "  ELK Version: 7.17.3 (No security complications)"
+      - "  Elasticsearch: HTTP only, single-node"
+      - "  Log Retention: Based on storage capacity"
+      - "  Trace Retention: {{ jaeger_max_traces }} traces in memory"
+      - ""
+      - "🚀 Getting Started:"
+      - "  1. Access Kibana at http://{{ kibana_external_url }}"
+      - "  2. Create index patterns for your logs"
+      - "  3. Configure log dashboards and visualizations"
+      - "  4. Set up alerting rules"
+      - "  5. Integrate applications with Jaeger for tracing"
+      - ""
+      - "✅ Status: Ready for use!"
+  tags:
+    - info
+    - summary
+    - logging
+    - tracing
+
+# Create Ingress for Jaeger
+- name: Create Jaeger Ingress
+  template:
+    src: roles/logging-tracing/templates/jaeger-ingress.yaml.j2
+    dest: /tmp/jaeger-ingress.yaml
+    mode: '0644'
+  tags:
+    - ingress
+    - jaeger
+    - tracing 
+
+- name: Apply Jaeger Ingress
+  shell: |
+    export PATH=/usr/local/bin:$PATH
+    /var/lib/rancher/rke2/bin/kubectl apply -f /tmp/jaeger-ingress.yaml
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - ingress
+    - jaeger
+    - tracing 
+
+- name: Display Jaeger Ingress status
+  shell: /var/lib/rancher/rke2/bin/kubectl get ingress -n {{ logging_namespace }} -o wide
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  register: jaeger_ingress_status
+  tags:
+    - ingress
+    - jaeger
+    - tracing
+    - status  
+
+# create ingress for kibana (Direct kubectl command - no template needed)
+- name: Create Kibana Ingress
+  shell: |
+    /var/lib/rancher/rke2/bin/kubectl create ingress kibana \
+      --class="{{ ingress_class }}" \
+      --rule="{{ kibana_external_url }}/*=kibana-kibana:5601" \
+      -n "{{ logging_namespace }}" \
+      --dry-run=client -o yaml | /var/lib/rancher/rke2/bin/kubectl apply -f -
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags:
+    - ingress
+    - kibana
+    - logging  
+
+- name: Display Kibana Ingress status
+  shell: /var/lib/rancher/rke2/bin/kubectl get ingress -n {{ logging_namespace }} -o wide
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  register: kibana_ingress_status
+  tags:
+    - ingress
+    - kibana
+    - logging
+    - status  
+
+

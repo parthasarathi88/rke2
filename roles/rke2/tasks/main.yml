@@ -1,0 +1,207 @@
+---
+# RKE2 Installation Role - Ubuntu Default Method
+# Using official RKE2 installation script with Ubuntu defaults
+
+- name: Display RKE2 installation overview
+  debug:
+    msg: |
+      🚀 RKE2 Installation - Ubuntu Default Method
+      =============================================
+      
+      📦 Node: {{ inventory_hostname }}
+      🎯 Role: {{ node_role }}
+      🌐 API Server: {{ hostvars[groups['rke2_servers'][0]]['ansible_default_ipv4']['address'] }}
+      📍 Ubuntu Version: {{ ansible_distribution }} {{ ansible_distribution_version }}
+      
+      🔧 Installation Method: Official Rancher Installation Script
+      📦 Version: {{ rke2_version }}
+
+# Step 1: Prerequisites for Ubuntu
+- name: Install prerequisite packages
+  apt:
+    name:
+      - curl
+      - ca-certificates
+      - iptables
+    state: present
+    update_cache: yes
+    
+# Step 2: Download and run RKE2 installation script
+- name: Download RKE2 installation script
+  get_url:
+    url: https://get.rke2.io
+    dest: /tmp/install-rke2.sh
+    mode: '0755'
+    
+- name: Install RKE2 server using official script
+  shell: |
+    INSTALL_RKE2_VERSION={{ rke2_version }} \
+    INSTALL_RKE2_TYPE=server \
+    /tmp/install-rke2.sh
+  when: node_role == 'server'
+  
+- name: Install RKE2 agent using official script
+  shell: |
+    INSTALL_RKE2_VERSION={{ rke2_version }} \
+    INSTALL_RKE2_TYPE=agent \
+    /tmp/install-rke2.sh
+  when: node_role == 'agent'
+  
+# Step 3: Configuration
+- name: Create RKE2 config directory
+  file:
+    path: /etc/rancher/rke2
+    state: directory
+    mode: '0755'
+    
+- name: Create RKE2 server configuration
+  copy:
+    content: |
+      # RKE2 Server Configuration - Ubuntu Default
+      write-kubeconfig-mode: "0644"
+      tls-san:
+        - "{{ ansible_default_ipv4.address }}"
+        - "{{ inventory_hostname }}"
+        - "{{ cluster_api_ha_ip }}"
+      cluster-cidr: "{{ cluster_cidr }}"
+      service-cidr: "{{ service_cidr }}"
+      cluster-dns: "{{ cluster_dns }}"
+      # Ubuntu-specific defaults
+      cni: "canal"
+    dest: /etc/rancher/rke2/config.yaml
+    mode: '0600'
+  when: node_role == 'server'
+  
+# Step 4: Start server first to get token
+- name: Enable and start RKE2 server service
+  systemd:
+    name: rke2-server
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  when: node_role == 'server'
+  
+- name: Wait for server to be ready
+  wait_for:
+    port: 9345
+    host: "{{ ansible_default_ipv4.address }}"
+    delay: 10
+    timeout: 300
+  when: node_role == 'server'
+  
+- name: Wait for node-token file to be created
+  wait_for:
+    path: /var/lib/rancher/rke2/server/node-token
+  when: node_role == 'server'
+  
+- name: Get server token (from first server)
+  slurp:
+    src: /var/lib/rancher/rke2/server/node-token
+  register: server_token
+  when: node_role == 'server' and inventory_hostname == groups['rke2_servers'][0]
+  
+- name: Store token for agents
+  set_fact:
+    rke2_token: "{{ hostvars[groups['rke2_servers'][0]]['server_token']['content'] | b64decode | trim }}"
+  when: node_role == 'agent'
+  
+# Step 5: Configure and start agents
+- name: Create RKE2 agent configuration
+  copy:
+    content: |
+      # RKE2 Agent Configuration - Ubuntu Default
+      server: https://{{ hostvars[groups['rke2_servers'][0]]['ansible_default_ipv4']['address'] }}:9345
+      token: {{ rke2_token }}
+    dest: /etc/rancher/rke2/config.yaml
+    mode: '0600'
+  when: node_role == 'agent'
+  
+- name: Enable and start RKE2 agent service
+  systemd:
+    name: rke2-agent
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  when: node_role == 'agent'
+  
+# Step 6: Post-installation setup
+- name: Add RKE2 binaries to PATH
+  copy:
+    content: |
+      # RKE2 binaries
+      export PATH=$PATH:/var/lib/rancher/rke2/bin
+    dest: /etc/profile.d/rke2.sh
+    mode: '0644'
+    
+- name: Create kubectl symlink
+  file:
+    src: /var/lib/rancher/rke2/bin/kubectl
+    dest: /usr/local/bin/kubectl
+    state: link
+  when: node_role == 'server'
+  
+- name: Create .kube directory for root
+  file:
+    path: /root/.kube
+    state: directory
+    mode: '0700'
+  when: node_role == 'server'
+  
+- name: Set up kubeconfig for root user
+  copy:
+    src: /etc/rancher/rke2/rke2.yaml
+    dest: /root/.kube/config
+    remote_src: yes
+    mode: '0600'
+  when: node_role == 'server'
+  
+# Step 7: Verification and labeling
+- name: Wait for cluster to be ready
+  shell: /var/lib/rancher/rke2/bin/kubectl get nodes --no-headers | wc -l
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  register: node_count
+  until: node_count.stdout | int >= groups['rke2_nodes'] | length
+  retries: 30
+  delay: 10
+  when: node_role == 'server' and inventory_hostname == groups['rke2_servers'][0]
+  
+- name: Label worker nodes with worker role
+  shell: /var/lib/rancher/rke2/bin/kubectl --kubeconfig=/etc/rancher/rke2/rke2.yaml label node {{ hostvars[item]['ansible_hostname'] }} node-role.kubernetes.io/worker=true --overwrite
+  loop: "{{ groups['rke2_agents'] }}"
+  when: node_role == 'server' and inventory_hostname == groups['rke2_servers'][0]
+  ignore_errors: true
+
+- name: Display cluster status
+  shell: /var/lib/rancher/rke2/bin/kubectl get nodes -o wide
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  register: cluster_status
+  when: node_role == 'server' and inventory_hostname == groups['rke2_servers'][0]
+  
+- name: Show RKE2 installation results
+  debug:
+    msg: |
+      ✅ RKE2 Installation Complete!
+      ==============================
+      
+      📦 Installation Method: Official RKE2 script
+      🎯 Node Role: {{ node_role }}
+      🚀 Service Status: Active
+      📦 Version: {{ rke2_version }}
+      
+      {% if node_role == 'server' and inventory_hostname == groups['rke2_servers'][0] %}
+      🌟 Cluster Status:
+      {{ cluster_status.stdout }}
+      
+      📋 Configuration Files:
+      - Config: /etc/rancher/rke2/config.yaml
+      - Kubeconfig: /etc/rancher/rke2/rke2.yaml
+      - Data Directory: /var/lib/rancher/rke2
+      
+      💡 Benefits:
+      - Official installation method
+      - Ubuntu default settings
+      - Canal CNI (Flannel + Calico)
+      - Standard systemd integration
+      {% endif %}

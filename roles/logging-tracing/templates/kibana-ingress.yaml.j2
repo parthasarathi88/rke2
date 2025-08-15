@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kibana
+  namespace: logging-tracing
+  annotations:
+    kubernetes.io/ingress.class: kong-external
+spec:
+  rules:
+  - host: kibana.dellpc.in
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: kibana-kibana
+            port:
+              number: 5601
