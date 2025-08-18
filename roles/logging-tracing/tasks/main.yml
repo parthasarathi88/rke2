@@ -5,12 +5,12 @@
 # Optimized for POC environment with resource constraints
 #
 # IMPORTANT: Uses Elasticsearch/Kibana 7.17.3 for simplicity
-# - No X-Pack security complications
+# - No X-Pack security complications (xpack.security.enabled=false)
 # - HTTP-only communication between components
-# - Single-node Elasticsearch cluster
-# - Proven working configuration
+# - Single-node Elasticsearch cluster (discovery.type=single-node)
+# - Proven working configuration tested on 2025-08-18
 #
-# Last updated: 2025-08-14 - Resolved "Kibana server is not ready yet" issue
+# Last updated: 2025-08-18 - Fixed security issues with single-node deployment
 
 - name: Create logging-tracing namespace
   shell: |
@@ -60,7 +60,7 @@
     - logging
     - tracing
 
-# Deploy Elasticsearch (7.17.3 - Simple HTTP without security)
+# Deploy Elasticsearch (7.17.3 - Single node with security disabled)
 - name: Deploy Elasticsearch (7.17.3)
   shell: |
     export PATH=/usr/local/bin:$PATH
@@ -68,14 +68,10 @@
       --version "{{ elasticsearch_chart_version }}" \
       --namespace "{{ logging_namespace }}" \
       --create-namespace \
-      --set clusterName="{{ elasticsearch_cluster_name }}" \
-      --set nodeGroup="{{ elasticsearch_node_group }}" \
       --set replicas="{{ elasticsearch_replicas }}" \
       --set minimumMasterNodes="{{ elasticsearch_min_master_nodes }}" \
-      --set esJavaOpts="{{ elasticsearch_java_opts }}" \
       --set xpack.security.enabled=false \
       --set discovery.type=single-node \
-      --set service.type=ClusterIP \
       --set volumeClaimTemplate.storageClassName="{{ storage_class }}" \
       --set volumeClaimTemplate.accessModes[0]=ReadWriteOnce \
       --set volumeClaimTemplate.resources.requests.storage="{{ elasticsearch_storage_size }}" \
@@ -83,6 +79,7 @@
       --set resources.requests.cpu="{{ elasticsearch_cpu_request }}" \
       --set resources.limits.memory="{{ elasticsearch_memory_limit }}" \
       --set resources.limits.cpu="{{ elasticsearch_cpu_limit }}" \
+      --set esJavaOpts="{{ elasticsearch_java_opts }}" \
       --wait --timeout=600s
   environment:
     KUBECONFIG: /etc/rancher/rke2/rke2.yaml
@@ -208,6 +205,7 @@
 - name: Display Elasticsearch health status
   debug:
     msg: "Elasticsearch cluster health: {{ elasticsearch_health.stdout }}"
+  when: elasticsearch_health is defined and elasticsearch_health.stdout is defined
   tags:
     - configure
     - elasticsearch

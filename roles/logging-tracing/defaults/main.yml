@@ -9,6 +9,13 @@
 # - 7.x allows simple HTTP communication without authentication
 # - Proven stable configuration for POC environments
 # - Avoids "Kibana server is not ready yet" issues
+# - Successfully tested single-node deployment: 2025-08-18
+#
+# KEY SETTINGS for working deployment:
+# - replicas: 1 (single node)
+# - minimumMasterNodes: 1 (single node)
+# - xpack.security.enabled: false (no security)
+# - discovery.type: single-node (no cluster discovery)
 
 # General Configuration
 logging_namespace: "logging-tracing"
